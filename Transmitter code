@@ -1,0 +1,146 @@
+#include <SPI.h>
+#include <LoRa.h>
+#include <Wire.h>
+#include <MPU6050.h> // Include MPU6050 library
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <TinyGPS++.h> // Include TinyGPS++ library for GPS parsing
+
+// Pulse rate sensor setup
+const int pulsePin = 26;  // GPIO26 (Pin 31) for pulse rate sensor signal
+int pulseValue = 0;       // Variable to store pulse rate sensor reading
+
+// Accelerometer (MPU6050) setup
+MPU6050 accel;
+
+// Temperature sensor (DS18B20) setup
+const int tempPin = 22;  // GPIO22 for DS18B20 data line
+OneWire oneWire(tempPin);
+DallasTemperature tempSensor(&oneWire);
+float temperatureC = 0.0;  // Variable to store temperature in Celsius
+
+// GPS module setup
+TinyGPSPlus gps;          // GPS object
+#define RXPin 1          // GPS TX to GPIO0 (UART RX)
+#define TXPin 0           // GPS RX to GPIO1 (UART TX)
+#define GPSBaud 9600      // GPS baud rate
+
+// Peltier module setup
+#define RELAY_PIN 3       // GPIO0 connected to relay control pin
+#define TEMP_THRESHOLD 30.0 // Temperature threshold in °C
+bool isPeltierOn = false; // Track Peltier status
+
+void setup() {
+  // Initialize Serial communication
+  Serial.begin(9600);
+  while (!Serial);
+
+  // Initialize LoRa module
+  Serial.println("Starting LoRa Transmitter...");
+  LoRa.setPins(17, 14, 15); // NSS, RESET, DIO0
+  
+  if (!LoRa.begin(433E6)) { // Set frequency (adjust as per region)
+    Serial.println("LoRa initialization failed!");
+    while (1);
+  }
+  Serial.println("LoRa initialization successful!");
+  LoRa.setTxPower(20);  // Set transmission power to maximum (20 dBm)
+
+  // Initialize pulse rate sensor (analog)
+  pinMode(pulsePin, INPUT);
+
+  // Initialize I2C for the accelerometer
+  Wire.begin();
+  accel.initialize(); // Initialize the accelerometer
+  if (!accel.testConnection()) {
+    Serial.println("MPU6050 connection failed!");
+    while (1);  // Halt if the accelerometer is not connected
+  }
+  Serial.println("MPU6050 initialized...");
+
+  // Initialize DS18B20 temperature sensor
+  tempSensor.begin();
+  Serial.println("DS18B20 temperature sensor initialized...");
+
+  // Initialize GPS module
+  Serial1.begin(GPSBaud);
+  Serial.println("GPS module initialized...");
+
+  // Initialize Relay for Peltier
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, HIGH); // Start with Peltier OFF
+}
+
+void loop() {
+  // Read pulse rate sensor value
+  pulseValue = analogRead(pulsePin);
+
+  // Read accelerometer data
+  int16_t ax, ay, az;
+  accel.getAcceleration(&ax, &ay, &az);
+
+  // Convert accelerometer data to g
+  float ax_g = ax / 16384.0;  // MPU6050 sensitivity scale factor (default)
+  float ay_g = ay / 16384.0;
+  float az_g = az / 16384.0;
+
+  // Request temperature reading from DS18B20
+  tempSensor.requestTemperatures();
+  temperatureC = tempSensor.getTempCByIndex(0); // Get temperature in Celsius
+
+  // Read GPS data
+  while (Serial1.available() > 0) {
+    gps.encode(Serial1.read());
+  }
+  
+  double latitude = 0.0, longitude = 0.0;
+  if (gps.location.isUpdated()) {
+    latitude = gps.location.lat();
+    longitude = gps.location.lng();
+  }
+
+  // Handle Peltier control logic
+  if (temperatureC < TEMP_THRESHOLD && !isPeltierOn) {
+    digitalWrite(RELAY_PIN, LOW); // Turn ON Peltier
+    isPeltierOn = true;
+    Serial.println("Peltier turned ON. Body temperature falling.");
+  } else if (temperatureC >= TEMP_THRESHOLD && isPeltierOn) {
+    digitalWrite(RELAY_PIN, HIGH); // Turn OFF Peltier
+    isPeltierOn = false;
+    Serial.println("Peltier turned OFF. Body temperature normal.");
+  }
+
+  // Print data to Serial Monitor
+  Serial.print("Pulse Value: ");
+  Serial.print(pulseValue);
+  Serial.print(", Accelerometer X: ");
+  Serial.print(ax_g, 3);
+  Serial.print(", Y: ");
+  Serial.print(ay_g, 3);
+  Serial.print(", Z: ");
+  Serial.print(az_g, 3);
+  Serial.print(", Temperature: ");
+  Serial.print(temperatureC);
+  Serial.print(" °C, Latitude: ");
+  Serial.print(latitude, 6);
+  Serial.print(", Longitude: ");
+  Serial.println(longitude, 6);
+
+  // Prepare data packet
+  String dataPacket = "Pulse: " + String(pulseValue) + 
+                      ", Accel X: " + String(ax_g, 3) + 
+                      ", Accel Y: " + String(ay_g, 3) + 
+                      ", Accel Z: " + String(az_g, 3) + 
+                      ", Temp: " + String(temperatureC) + " °C, " + 
+                      "Lat: " + String(latitude, 6) + 
+                      ", Lon: " + String(longitude, 6) +
+                      ", Peltier: " + (isPeltierOn ? "ON" : "OFF");
+  Serial.println("Sending packet: " + dataPacket);
+
+  // Transmit data via LoRa
+  LoRa.beginPacket();
+  LoRa.print(dataPacket);
+  LoRa.endPacket();
+
+  delay(1000); // Wait 1 second before sending the next packet
+}
