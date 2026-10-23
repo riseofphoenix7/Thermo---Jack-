@@ -1,0 +1,81 @@
+#include <SPI.h>
+#include <LoRa.h>
+#include <Wire.h>
+#include <LiquidCrystal_PCF8574.h>  // Include the new LCD library
+
+// Initialize the LCD (using LiquidCrystal_PCF8574 library)
+LiquidCrystal_PCF8574 lcd(0x27); // I2C address for the LCD
+
+void setup() {
+  // Initialize Serial communication
+  Serial.begin(9600);
+  while (!Serial);
+
+  // Initialize LCD
+  lcd.begin(16, 2);  // Set the size of the LCD (16 columns, 2 rows)
+  lcd.setBacklight(1);    // Turn on the backlight
+  lcd.setCursor(0, 0);
+  lcd.print("Initializing...");
+
+  // Initialize LoRa module
+  Serial.println("LoRa Receiver");
+  LoRa.setPins(17, 14, 15); // NSS, RESET, DIO0
+
+  if (!LoRa.begin(433E6)) { // Set frequency (adjust as per region)
+    Serial.println("LoRa initialization failed!");
+    lcd.setCursor(0, 1);
+    lcd.print("LoRa Init Failed");
+    while (1);
+  }
+  Serial.println("LoRa initialization successful!");
+  lcd.setCursor(0, 1);
+  lcd.print("LoRa Initialized");
+}
+
+void loop() {
+  // Check if LoRa data is available to read
+  int packetSize = LoRa.parsePacket();
+  if (packetSize) {
+    // Read the incoming packet
+    String receivedData = "";
+    while (LoRa.available()) {
+      receivedData += (char)LoRa.read();
+    }
+
+    // Print the received packet
+    Serial.println("Received packet:");
+    Serial.println(receivedData);
+
+    // Parse and display temperature
+    displayTemperature(receivedData);
+  }
+
+  delay(1000); // Wait for a while before reading again
+}
+
+void displayTemperature(String data) {
+  // Look for the "Temp" key in the received data
+  int tempIndex = data.indexOf("Temp:");
+  if (tempIndex != -1) {
+    int startIndex = tempIndex + 5; // Skip "Temp:"
+    int endIndex = data.indexOf(',', startIndex); // Find the next comma
+    if (endIndex == -1) {
+      endIndex = data.length(); // No comma, take until the end
+    }
+
+    // Extract and clean the temperature value
+    String tempValue = data.substring(startIndex, endIndex);
+    tempValue.trim();
+
+    // Print temperature to Serial Monitor
+    Serial.print("Temperature: ");
+    Serial.println(tempValue);
+
+    // Display temperature on LCD
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Temperature:");
+    lcd.setCursor(0, 1);
+    lcd.print(tempValue);
+  }
+}
